@@ -14,9 +14,15 @@ dwv.ctrl.ViewController = function (view) {
   // third dimension player ID (created by setInterval)
   var playerID = null;
 
+  // check view
+  if (typeof view.getImage() === 'undefined') {
+    throw new Error('View does not have an image, cannot setup controller');
+  }
+
   // setup the plane helper
   var planeHelper = new dwv.image.PlaneHelper(
-    view.getImage().getGeometry().getSpacing(),
+    view.getImage().getGeometry().getRealSpacing(),
+    view.getImage().getGeometry().getOrientation(),
     view.getOrientation()
   );
 
@@ -139,6 +145,10 @@ dwv.ctrl.ViewController = function (view) {
    */
   this.getCurrentScrollIndexValue = function () {
     return view.getCurrentIndex().get(view.getScrollIndex());
+  };
+
+  this.getOrigin = function (position) {
+    return view.getOrigin(position);
   };
 
   /**
@@ -286,7 +296,63 @@ dwv.ctrl.ViewController = function (view) {
    * @returns {dwv.image.Size} The size.
    */
   this.getImageSize = function () {
-    return view.getImage().getGeometry().getSize();
+    return view.getImage().getGeometry().getSize(view.getOrientation());
+  };
+
+  /**
+   * Get the image world (mm) 2D size.
+   *
+   * @returns {object} The 2D size as {x,y}.
+   */
+  this.getImageWorldSize = function () {
+    var geometry = view.getImage().getGeometry();
+    var size = geometry.getSize(view.getOrientation()).get2D();
+    var spacing = geometry.getSpacing(view.getOrientation()).get2D();
+    return {
+      x: size.x * spacing.x,
+      y: size.y * spacing.y
+    };
+  };
+
+  /**
+   * Get the image rescaled data range.
+   *
+   * @returns {object} The range as {min, max}.
+   */
+  this.getImageRescaledDataRange = function () {
+    return view.getImage().getRescaledDataRange();
+  };
+
+  /**
+   * Compare the input meta data to the associated image one.
+   *
+   * @param {object} meta The meta data.
+   * @returns {boolean} True if the associated image has equal meta data.
+   */
+  this.equalImageMeta = function (meta) {
+    var imageMeta = view.getImage().getMeta();
+    // loop through input meta keys
+    var metaKeys = Object.keys(meta);
+    for (var i = 0; i < metaKeys.length; ++i) {
+      var metaKey = metaKeys[i];
+      if (typeof imageMeta[metaKey] === 'undefined') {
+        return false;
+      }
+      if (imageMeta[metaKey] !== meta[metaKey]) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Check is the provided position can be set.
+   *
+   * @param {dwv.math.Point} position The position.
+   * @returns {boolean} True is the position is in bounds.
+   */
+  this.canSetPosition = function (position) {
+    return view.canSetPosition(position);
   };
 
   /**
@@ -308,8 +374,18 @@ dwv.ctrl.ViewController = function (view) {
    * @returns {boolean} False if not in bounds.
    */
   this.setCurrentPosition2D = function (x, y) {
-    return view.setCurrentPosition(
-      this.getPositionFromPlanePoint({x: x, y: y}));
+    // keep third direction
+    var k = this.getCurrentScrollIndexValue();
+    var planePoint = new dwv.math.Point3D(x, y, k);
+    // de-orient
+    var point = planeHelper.getImageOrientedVector3D(planePoint);
+    // ~indexToWorld to not loose precision
+    var geometry = view.getImage().getGeometry();
+    var point3D = geometry.pointToWorld(point);
+    // merge with current position to keep extra dimensions
+    var position = this.getCurrentPosition().mergeWith3D(point3D);
+
+    return view.setCurrentPosition(position);
   };
 
   /**
@@ -334,7 +410,7 @@ dwv.ctrl.ViewController = function (view) {
     var k = this.getCurrentScrollIndexValue();
     var planePoint = new dwv.math.Point3D(point2D.x, point2D.y, k);
     // de-orient
-    var point = planeHelper.getDeOrientedVector3D(planePoint);
+    var point = planeHelper.getImageOrientedVector3D(planePoint);
     // ~indexToWorld to not loose precision
     var geometry = view.getImage().getGeometry();
     var point3D = geometry.pointToWorld(point);
@@ -354,10 +430,10 @@ dwv.ctrl.ViewController = function (view) {
     var k = this.getCurrentScrollIndexValue();
     var planePoint = new dwv.math.Point3D(point2D.x, point2D.y, k);
     // de-orient
-    var point = planeHelper.getDeOrientedVector3D(planePoint);
+    var point = planeHelper.getTargetDeOrientedVector3D(planePoint);
     // ~indexToWorld to not loose precision
     var geometry = view.getImage().getGeometry();
-    var spacing = geometry.getSpacing();
+    var spacing = geometry.getRealSpacing();
     return new dwv.math.Point3D(
       point.getX() * spacing.get(0),
       point.getY() * spacing.get(1),

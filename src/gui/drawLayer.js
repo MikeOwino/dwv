@@ -64,6 +64,22 @@ dwv.gui.DrawLayer = function (containerDiv) {
   var baseOffset = {x: 0, y: 0};
 
   /**
+   * The view offset.
+   *
+   * @private
+   * @type {object}
+   */
+  var viewOffset = {x: 0, y: 0};
+
+  /**
+   * The zoom offset.
+   *
+   * @private
+   * @type {object}
+   */
+  var zoomOffset = {x: 0, y: 0};
+
+  /**
    * The draw controller.
    *
    * @private
@@ -182,16 +198,59 @@ dwv.gui.DrawLayer = function (containerDiv) {
    * Set the layer scale.
    *
    * @param {object} newScale The scale as {x,y}.
+   * @param {dwv.math.Point3D} center The scale center.
    */
-  this.setScale = function (newScale) {
-    var orientedNewScale = planeHelper.getOrientedXYZ(newScale);
-    var fullScale = {
+  this.setScale = function (newScale, center) {
+    var orientedNewScale = planeHelper.getTargetOrientedXYZ(newScale);
+    var finalNewScale = {
       x: fitScale.x * orientedNewScale.x,
       y: fitScale.y * orientedNewScale.y
     };
-    konvaStage.scale(fullScale);
-    // update labelss
-    updateLabelScale(fullScale);
+
+    var offset = konvaStage.offset();
+
+    if (newScale.x === 1 &&
+      newScale.y === 1 &&
+      newScale.z === 1) {
+      // reset zoom offset for scale=1
+      var resetOffset = {
+        x: offset.x - zoomOffset.x,
+        y: offset.y - zoomOffset.y
+      };
+      // store new offset
+      zoomOffset = {x: 0, y: 0};
+      konvaStage.offset(resetOffset);
+    } else {
+      if (typeof center !== 'undefined') {
+        var worldCenter = planeHelper.getPlaneOffsetFromOffset3D({
+          x: center.getX(),
+          y: center.getY(),
+          z: center.getZ()
+        });
+        // center was obtained with viewLayer.displayToPlanePosNoBase
+        // compensated for baseOffset
+        // TODO: justify...
+        worldCenter = {
+          x: worldCenter.x + baseOffset.x,
+          y: worldCenter.y + baseOffset.y
+        };
+
+        var newOffset = dwv.gui.getScaledOffset(
+          offset, konvaStage.scale(), finalNewScale, worldCenter);
+
+        var newZoomOffset = {
+          x: zoomOffset.x + newOffset.x - offset.x,
+          y: zoomOffset.y + newOffset.y - offset.y
+        };
+        // store new offset
+        zoomOffset = newZoomOffset;
+        konvaStage.offset(newOffset);
+      }
+    }
+
+    konvaStage.scale(finalNewScale);
+    // update labels
+    updateLabelScale(finalNewScale);
   };
 
   /**
@@ -202,27 +261,37 @@ dwv.gui.DrawLayer = function (containerDiv) {
   this.setOffset = function (newOffset) {
     var planeNewOffset = planeHelper.getPlaneOffsetFromOffset3D(newOffset);
     konvaStage.offset({
-      x: baseOffset.x + planeNewOffset.x,
-      y: baseOffset.y + planeNewOffset.y
+      x: viewOffset.x + baseOffset.x + zoomOffset.x + planeNewOffset.x,
+      y: viewOffset.y + baseOffset.y + zoomOffset.y + planeNewOffset.y
     });
   };
 
   /**
-   * Set the base layer offset. Resets the layer offset.
+   * Set the base layer offset. Updates the layer offset.
    *
-   * @param {object} off The offset as {x,y}.
+   * @param {dwv.math.Vector3D} scrollOffset The scroll offset vector.
+   * @param {dwv.math.Vector3D} planeOffset The plane offset vector.
+   * @returns {boolean} True if the offset was updated.
    */
-  this.setBaseOffset = function (off) {
-    baseOffset = planeHelper.getPlaneOffsetFromOffset3D({
-      x: off.getX(),
-      y: off.getY(),
-      z: off.getZ()
+  this.setBaseOffset = function (scrollOffset, planeOffset) {
+    var scrollIndex = planeHelper.getNativeScrollIndex();
+    var newOffset = planeHelper.getPlaneOffsetFromOffset3D({
+      x: scrollIndex === 0 ? scrollOffset.getX() : planeOffset.getX(),
+      y: scrollIndex === 1 ? scrollOffset.getY() : planeOffset.getY(),
+      z: scrollIndex === 2 ? scrollOffset.getZ() : planeOffset.getZ(),
     });
-    // reset offset
-    konvaStage.offset({
-      x: baseOffset.x,
-      y: baseOffset.y
-    });
+    var needsUpdate = baseOffset.x !== newOffset.x ||
+      baseOffset.y !== newOffset.y;
+    // reset offset if needed
+    if (needsUpdate) {
+      var offset = konvaStage.offset();
+      konvaStage.offset({
+        x: offset.x - baseOffset.x + newOffset.x,
+        y: offset.y - baseOffset.y + newOffset.y
+      });
+      baseOffset = newOffset;
+    }
+    return needsUpdate;
   };
 
   /**
@@ -291,18 +360,38 @@ dwv.gui.DrawLayer = function (containerDiv) {
    *
    * @param {number} fitScale1D The 1D fit scale.
    * @param {object} fitSize The fit size as {x,y}.
+   * @param {object} fitOffset The fit offset as {x,y}.
    */
-  this.fitToContainer = function (fitScale1D, fitSize) {
+  this.fitToContainer = function (fitScale1D, fitSize, fitOffset) {
+    // update konva
+    konvaStage.setWidth(fitSize.x);
+    konvaStage.setHeight(fitSize.y);
+
+    // previous scale without fit
+    var previousScale = {
+      x: konvaStage.scale().x / fitScale.x,
+      y: konvaStage.scale().y / fitScale.y
+    };
     // update fit scale
     fitScale = {
       x: fitScale1D * baseSpacing.x,
       y: fitScale1D * baseSpacing.y
     };
-    // update konva
-    konvaStage.setWidth(fitSize.x);
-    konvaStage.setHeight(fitSize.y);
-    // reset scale
-    this.setScale({x: 1, y: 1, z: 1});
+    // update scale
+    konvaStage.scale({
+      x: previousScale.x * fitScale.x,
+      y: previousScale.y * fitScale.y
+    });
+
+    // update offsets
+    viewOffset = {
+      x: fitOffset.x / fitScale.x,
+      y: fitOffset.y / fitScale.y
+    };
+    konvaStage.offset({
+      x: viewOffset.x + baseOffset.x + zoomOffset.x,
+      y: viewOffset.y + baseOffset.y + zoomOffset.y
+    });
   };
 
   /**
@@ -338,10 +427,13 @@ dwv.gui.DrawLayer = function (containerDiv) {
    *
    * @param {dwv.math.Point} position The new position.
    * @param {dwv.math.Index} index The new index.
+   * @returns {boolean} True if the position was updated.
    */
   this.setCurrentPosition = function (position, index) {
     this.getDrawController().activateDrawLayer(
       index, planeHelper.getScrollIndex());
+    // TODO: add check
+    return true;
   };
 
   /**

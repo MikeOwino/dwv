@@ -18,6 +18,16 @@ var _tools = null;
 var _mode = 0;
 var _dicomWeb = false;
 
+// example private logic for time value retrieval
+// dwv.dicom.DicomElementsWrapper.prototype.getTime = function () {
+//   var value;
+//   var time = this.getFromKey('xABCD0123');
+//   if (typeof time !== 'undefined') {
+//     value = parseInt(time, 10);
+//   }
+//   return value;
+// };
+
 /**
  * Setup simple dwv app.
  */
@@ -65,9 +75,6 @@ dwv.test.viewerSetup = function () {
         }
       ]
     };
-  } else if (_mode === 3) {
-    // timepoint mode
-    dataViewConfigs = prepareAndGetSimpleDataViewConfig();
   }
 
   // tools
@@ -75,6 +82,7 @@ dwv.test.viewerSetup = function () {
     Scroll: {},
     WindowLevel: {},
     ZoomAndPan: {},
+    Opacity: {},
     Draw: {options: ['Rectangle'], type: 'factory'}
   };
 
@@ -108,30 +116,38 @@ dwv.test.viewerSetup = function () {
         dataLoadProgress.reduce(sumReducer) / numberOfDataToLoad;
     }
   });
-  var dataLoad = 0;
   _app.addEventListener('load', function (event) {
-    console.log(_app.getMetaData(event.loadid));
     if (!viewOnFirstLoadItem) {
       _app.render(event.loadid);
-    }
-    // add data control row
-    if (_mode !== 3) {
-      addDataRow(dataLoad, dataViewConfigs);
-    }
-    ++dataLoad;
-    // init gui
-    if (dataLoad === numberOfDataToLoad) {
-      // select tool
-      _app.setTool('Scroll');
-
-      var changeLayoutSelect = document.getElementById('changelayout');
-      changeLayoutSelect.disabled = false;
-      var resetLayoutButton = document.getElementById('resetlayout');
-      resetLayoutButton.disabled = false;
     }
   });
   _app.addEventListener('loadend', function (event) {
     console.timeEnd('load-data-' + event.loadid);
+  });
+
+  var dataLoad = 0;
+  var firstRender = [];
+  _app.addEventListener('loadend', function (event) {
+    // update UI at first render
+    if (!firstRender.includes(event.loadid)) {
+      // store data id
+      firstRender.push(event.dataid);
+      // log meta data
+      console.log('metadata', _app.getMetaData(event.loadid));
+      // add data row
+      addDataRow(event.loadid);
+      ++dataLoad;
+      // init gui
+      if (dataLoad === numberOfDataToLoad) {
+        // select tool
+        _app.setTool('Scroll');
+
+        var changeLayoutSelect = document.getElementById('changelayout');
+        changeLayoutSelect.disabled = false;
+        var resetLayoutButton = document.getElementById('resetlayout');
+        resetLayoutButton.disabled = false;
+      }
+    }
   });
 
   _app.addEventListener('positionchange', function (event) {
@@ -207,12 +223,17 @@ dwv.test.onDOMContentLoadedViewer = function () {
       configs = prepareAndGetSimpleDataViewConfig();
     }
 
+    // unbind app to controls
+    unbindAppToControls();
+
+    // set config
     _app.setDataViewConfig(configs);
 
     clearDataTable();
     for (var i = 0; i < _app.getNumberOfLoadedData(); ++i) {
       _app.render(i);
-      addDataRow(i, configs);
+      // add data row (will bind controls)
+      addDataRow(i);
     }
 
     // need to set tool after config change
@@ -232,17 +253,11 @@ dwv.test.onDOMContentLoadedViewer = function () {
   setupToolsCheckboxes();
 
   // bind app to input files
-  var timeId = -1;
   var fileinput = document.getElementById('fileinput');
   fileinput.addEventListener('change', function (event) {
-    ++timeId;
     console.log('%c ----------------', 'color: teal;');
     console.log(event.target.files);
-    var options = {};
-    if (_mode === 3) {
-      options = {timepoint: {id: timeId, dataId: 0}};
-    }
-    _app.loadFiles(event.target.files, options);
+    _app.loadFiles(event.target.files);
   });
 };
 
@@ -352,6 +367,12 @@ function setupBindersCheckboxes() {
     'Opacity'
   ];
   var binders = [];
+  // add all binders at startup
+  for (var b = 0; b < propList.length; ++b) {
+    binders.push(new dwv.gui[propList[b] + 'Binder']);
+  }
+  _app.setLayerGroupsBinders(binders);
+
   /**
    * Add a binder.
    *
@@ -396,6 +417,7 @@ function setupBindersCheckboxes() {
     var input = document.createElement('input');
     input.id = 'binder-' + i;
     input.type = 'checkbox';
+    input.checked = true;
     input.onchange = getOnInputChange(propName);
 
     var label = document.createElement('label');
@@ -410,6 +432,7 @@ function setupBindersCheckboxes() {
   var allInput = document.createElement('input');
   allInput.id = 'binder-all';
   allInput.type = 'checkbox';
+  allInput.checked = true;
   allInput.onchange = function () {
     for (var j = 0; j < propList.length; ++j) {
       document.getElementById('binder-' + j).click();
@@ -468,6 +491,79 @@ function setupToolsCheckboxes() {
 
     // keyboard shortcut
     window.addEventListener('keydown', getKeyCheck(key.charCodeAt(0), input));
+  }
+}
+
+/**
+ * Bind app to controls.
+ */
+function bindAppToControls() {
+  _app.addEventListener('wlchange', onWLChange);
+  _app.addEventListener('opacitychange', onOpacityChange);
+}
+
+/**
+ * Unbind app to controls.
+ */
+function unbindAppToControls() {
+  _app.removeEventListener('wlchange', onWLChange);
+  _app.removeEventListener('opacitychange', onOpacityChange);
+}
+
+/**
+ * Handle app wl change.
+ *
+ * @param {object} event The change event.
+ */
+function onWLChange(event) {
+  // width number
+  var elemId = 'width-' + event.dataindex + '-number';
+  var elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = event.value[1];
+  } else {
+    console.warn('wl change: HTML not ready?');
+  }
+  // width range
+  elemId = 'width-' + event.dataindex + '-range';
+  elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = event.value[1];
+  }
+  // center number
+  elemId = 'center-' + event.dataindex + '-number';
+  elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = event.value[0];
+  }
+  // center range
+  elemId = 'center-' + event.dataindex + '-range';
+  elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = event.value[0];
+  }
+}
+
+/**
+ * Handle app opacity change.
+ *
+ * @param {object} event The change event.
+ */
+function onOpacityChange(event) {
+  var value = parseFloat(event.value[0]).toPrecision(3);
+  // number
+  var elemId = 'opacity-' + event.dataindex + '-number';
+  var elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = value;
+  } else {
+    console.warn('opacity change: HTML not ready?');
+  }
+  // range
+  elemId = 'opacity-' + event.dataindex + '-range';
+  elem = document.getElementById(elemId);
+  if (elem) {
+    elem.value = value;
   }
 }
 
@@ -540,10 +636,15 @@ function getControlDiv(id, name, min, max, value, callback, precision) {
  * Add a data row.
  *
  * @param {number} id The data index.
- * @param {object} dataViewConfigs The view configurations.
  */
-function addDataRow(id, dataViewConfigs) {
-  var layerGroupIds = getLayerGroupIds(dataViewConfigs);
+function addDataRow(id) {
+  // bind app to controls on first id
+  if (id === 0) {
+    bindAppToControls();
+  }
+
+  var dataViewConfigs = _app.getDataViewConfig();
+  var allLayerGroupIds = getLayerGroupIds(dataViewConfigs);
   // use first view layer
   var vls = _app.getViewLayersByDataIndex(id);
   var vl = vls[0];
@@ -564,7 +665,7 @@ function addDataRow(id, dataViewConfigs) {
       trow.appendChild(th);
     };
     insertTCell('Id');
-    for (var j = 0; j < layerGroupIds.length; ++j) {
+    for (var j = 0; j < allLayerGroupIds.length; ++j) {
       insertTCell('LG' + j);
     }
     insertTCell('Alpha Range');
@@ -591,8 +692,8 @@ function addDataRow(id, dataViewConfigs) {
     viewConfig = dataViewConfigs['*'];
   }
   var dataLayerGroupsIds = getDataLayerGroupIds(viewConfig);
-  for (var l = 0; l < layerGroupIds.length; ++l) {
-    var layerGroupId = layerGroupIds[l];
+  for (var l = 0; l < allLayerGroupIds.length; ++l) {
+    var layerGroupId = allLayerGroupIds[l];
     cell = row.insertCell();
     if (!dataLayerGroupsIds.includes(layerGroupId)) {
       continue;
@@ -621,7 +722,7 @@ function addDataRow(id, dataViewConfigs) {
   cell = row.insertCell();
   var minId = 'value-min-' + id;
   var maxId = 'value-max-' + id;
-  // calback
+  // callback
   var changeAlphaFunc = function () {
     var min = parseFloat(document.getElementById(minId + '-number').value);
     var max = parseFloat(document.getElementById(maxId + '-number').value);
@@ -647,9 +748,10 @@ function addDataRow(id, dataViewConfigs) {
   cell = row.insertCell();
   var widthId = 'width-' + id;
   var centerId = 'center-' + id;
-  // calback
+  // callback
   var changeContrast = function () {
-    var width = parseFloat(document.getElementById(widthId + '-number').value);
+    var width =
+      parseFloat(document.getElementById(widthId + '-number').value);
     var center =
       parseFloat(document.getElementById(centerId + '-number').value);
     vc.setWindowLevel(center, width);
@@ -664,13 +766,13 @@ function addDataRow(id, dataViewConfigs) {
 
   // cell: opactiy
   cell = row.insertCell();
-  var opacityId = 'opactiy-' + id;
-  // calback
+  var opacityId = 'opacity-' + id;
+  // callback
   var changeOpacity = function (value) {
     vl.setOpacity(value);
     vl.draw();
   };
   // add controls
   cell.appendChild(getControlDiv(opacityId, 'opacity',
-    0, 1, vl.getOpacity(), changeOpacity));
+    0, 1, vl.getOpacity(), changeOpacity, floatPrecision));
 }

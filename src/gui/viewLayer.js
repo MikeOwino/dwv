@@ -48,6 +48,14 @@ dwv.gui.ViewLayer = function (containerDiv) {
   var context = null;
 
   /**
+   * Flag to know if the current position is valid.
+   *
+   * @private
+   * @type {boolean}
+   */
+  var isValidPosition = true;
+
+  /**
    * The image data array.
    *
    * @private
@@ -110,6 +118,22 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @type {object}
    */
   var baseOffset = {x: 0, y: 0};
+
+  /**
+   * The view offset.
+   *
+   * @private
+   * @type {object}
+   */
+  var viewOffset = {x: 0, y: 0};
+
+  /**
+   * The zoom offset.
+   *
+   * @private
+   * @type {object}
+   */
+  var zoomOffset = {x: 0, y: 0};
 
   /**
    * Data update flag.
@@ -190,6 +214,7 @@ dwv.gui.ViewLayer = function (containerDiv) {
     // event.value = [index, image]
     if (dataIndex === event.value[0]) {
       viewController.setImage(event.value[1]);
+      setBaseSize(viewController.getImageSize().get2D());
       needsDataUpdate = true;
     }
   };
@@ -215,6 +240,15 @@ dwv.gui.ViewLayer = function (containerDiv) {
   };
 
   /**
+   * Get the image world (mm) 2D size.
+   *
+   * @returns {object} The 2D size as {x,y}.
+   */
+  this.getImageWorldSize = function () {
+    return viewController.getImageWorldSize();
+  };
+
+  /**
    * Get the layer opacity.
    *
    * @returns {number} The opacity ([0:1] range).
@@ -229,6 +263,10 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @param {number} alpha The opacity ([0:1] range).
    */
   this.setOpacity = function (alpha) {
+    if (alpha === opacity) {
+      return;
+    }
+
     opacity = Math.min(Math.max(alpha, 0), 1);
 
     /**
@@ -249,30 +287,85 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * Set the layer scale.
    *
    * @param {object} newScale The scale as {x,y}.
+   * @param {dwv.math.Point3D} center The scale center.
    */
-  this.setScale = function (newScale) {
+  this.setScale = function (newScale, center) {
     var helper = viewController.getPlaneHelper();
-    var orientedNewScale = helper.getOrientedXYZ(newScale);
-    scale = {
+    var orientedNewScale = helper.getTargetOrientedXYZ(newScale);
+    var finalNewScale = {
       x: fitScale.x * orientedNewScale.x,
       y: fitScale.y * orientedNewScale.y
     };
+
+    if (newScale.x === 1 &&
+      newScale.y === 1 &&
+      newScale.z === 1) {
+      // reset zoom offset for scale=1
+      var resetOffset = {
+        x: offset.x - zoomOffset.x,
+        y: offset.y - zoomOffset.y
+      };
+      // store new offset
+      zoomOffset = {x: 0, y: 0};
+      offset = resetOffset;
+    } else {
+      if (typeof center !== 'undefined') {
+        var worldCenter = helper.getPlaneOffsetFromOffset3D({
+          x: center.getX(),
+          y: center.getY(),
+          z: center.getZ()
+        });
+        // center was obtained with viewLayer.displayToPlanePosNoBase
+        // compensated for baseOffset
+        // TODO: justify...
+        worldCenter = {
+          x: worldCenter.x + baseOffset.x,
+          y: worldCenter.y + baseOffset.y
+        };
+
+        var newOffset = dwv.gui.getScaledOffset(
+          offset, scale, finalNewScale, worldCenter);
+
+        var newZoomOffset = {
+          x: zoomOffset.x + newOffset.x - offset.x,
+          y: zoomOffset.y + newOffset.y - offset.y
+        };
+        // store new offset
+        zoomOffset = newZoomOffset;
+        offset = newOffset;
+      }
+    }
+
+    // store new scale
+    scale = finalNewScale;
   };
 
   /**
-   * Set the base layer offset. Resets the layer offset.
+   * Set the base layer offset. Updates the layer offset.
    *
-   * @param {object} off The offset as {x,y}.
+   * @param {dwv.math.Vector3D} scrollOffset The scroll offset vector.
+   * @param {dwv.math.Vector3D} planeOffset The plane offset vector.
+   * @returns {boolean} True if the offset was updated.
    */
-  this.setBaseOffset = function (off) {
+  this.setBaseOffset = function (scrollOffset, planeOffset) {
     var helper = viewController.getPlaneHelper();
-    baseOffset = helper.getPlaneOffsetFromOffset3D({
-      x: off.getX(),
-      y: off.getY(),
-      z: off.getZ()
+    var scrollIndex = helper.getNativeScrollIndex();
+    var newOffset = helper.getPlaneOffsetFromOffset3D({
+      x: scrollIndex === 0 ? scrollOffset.getX() : planeOffset.getX(),
+      y: scrollIndex === 1 ? scrollOffset.getY() : planeOffset.getY(),
+      z: scrollIndex === 2 ? scrollOffset.getZ() : planeOffset.getZ(),
     });
-    // reset offset
-    offset = baseOffset;
+    var needsUpdate = baseOffset.x !== newOffset.x ||
+      baseOffset.y !== newOffset.y;
+    // reset offset if needed
+    if (needsUpdate) {
+      offset = {
+        x: offset.x - baseOffset.x + newOffset.x,
+        y: offset.y - baseOffset.y + newOffset.y
+      };
+      baseOffset = newOffset;
+    }
+    return needsUpdate;
   };
 
   /**
@@ -284,8 +377,8 @@ dwv.gui.ViewLayer = function (containerDiv) {
     var helper = viewController.getPlaneHelper();
     var planeNewOffset = helper.getPlaneOffsetFromOffset3D(newOffset);
     offset = {
-      x: baseOffset.x + planeNewOffset.x,
-      y: baseOffset.y + planeNewOffset.y
+      x: viewOffset.x + baseOffset.x + zoomOffset.x + planeNewOffset.x,
+      y: viewOffset.y + baseOffset.y + zoomOffset.y + planeNewOffset.y
     };
   };
 
@@ -374,6 +467,11 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @fires dwv.App#renderend
    */
   this.draw = function () {
+    // skip for non valid position
+    if (!isValidPosition) {
+      return;
+    }
+
     /**
      * Render start event.
      *
@@ -383,7 +481,8 @@ dwv.gui.ViewLayer = function (containerDiv) {
      */
     var event = {
       type: 'renderstart',
-      layerid: this.getId()
+      layerid: this.getId(),
+      dataid: this.getDataIndex()
     };
     fireEvent(event);
 
@@ -395,14 +494,8 @@ dwv.gui.ViewLayer = function (containerDiv) {
     // context opacity
     context.globalAlpha = opacity;
 
-    // clear the context: reset the transform first
-    // store the current transformation matrix
-    context.save();
-    // use the identity matrix while clearing the canvas
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    // restore the transform
-    context.restore();
+    // clear context
+    this.clear();
 
     // draw the cached canvas on the context
     // transform takes as input a, b, c, d, e, f to create
@@ -433,7 +526,8 @@ dwv.gui.ViewLayer = function (containerDiv) {
      */
     event = {
       type: 'renderend',
-      layerid: this.getId()
+      layerid: this.getId(),
+      dataid: this.getDataIndex()
     };
     fireEvent(event);
   };
@@ -444,12 +538,13 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @param {object} size The image size as {x,y}.
    * @param {object} spacing The image spacing as {x,y}.
    * @param {number} index The associated data index.
+   * @param {number} alpha The initial data opacity.
    */
-  this.initialise = function (size, spacing, index) {
+  this.initialise = function (size, spacing, index, alpha) {
     // set locals
-    baseSize = size;
     baseSpacing = spacing;
     dataIndex = index;
+    opacity = Math.min(Math.max(alpha, 0), 1);
 
     // create canvas
     // (canvas size is set in fitToContainer)
@@ -468,45 +563,103 @@ dwv.gui.ViewLayer = function (containerDiv) {
       return;
     }
 
-    // check canvas
-    if (!dwv.gui.canCreateCanvas(baseSize.x, baseSize.y)) {
-      throw new Error('Cannot create canvas ' + baseSize.x + ', ' + baseSize.y);
-    }
-
     // off screen canvas
     offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = baseSize.x;
-    offscreenCanvas.height = baseSize.y;
-    // original empty image data array
-    context.clearRect(0, 0, baseSize.x, baseSize.y);
-    imageData = context.createImageData(baseSize.x, baseSize.y);
+
+    // set base size: needs an existing context and off screen canvas
+    setBaseSize(size);
 
     // update data on first draw
     needsDataUpdate = true;
   };
 
   /**
+   * Set the base size of the layer.
+   *
+   * @param {object} size The size as {x,y}.
+   */
+  function setBaseSize(size) {
+    // check canvas creation
+    if (!dwv.gui.canCreateCanvas(size.x, size.y)) {
+      throw new Error('Cannot create canvas ' + size.x + ', ' + size.y);
+    }
+
+    // set local
+    baseSize = size;
+
+    // off screen canvas
+    offscreenCanvas.width = baseSize.x;
+    offscreenCanvas.height = baseSize.y;
+    // original empty image data array
+    context.clearRect(0, 0, baseSize.x, baseSize.y);
+    imageData = context.createImageData(baseSize.x, baseSize.y);
+  }
+
+  /**
    * Fit the layer to its parent container.
    *
    * @param {number} fitScale1D The 1D fit scale.
    * @param {object} fitSize The fit size as {x,y}.
+   * @param {object} fitOffset The fit offset as {x,y}.
    */
-  this.fitToContainer = function (fitScale1D, fitSize) {
-    // update fit scale
-    fitScale = {
+  this.fitToContainer = function (fitScale1D, fitSize, fitOffset) {
+    var needsDraw = false;
+
+    // update canvas size if needed (triggers canvas reset)
+    if (canvas.width !== fitSize.x || canvas.height !== fitSize.y) {
+      if (!dwv.gui.canCreateCanvas(fitSize.x, fitSize.y)) {
+        throw new Error('Cannot resize canvas ' + fitSize.x + ', ' + fitSize.y);
+      }
+      // canvas size  change triggers canvas reset
+      canvas.width = fitSize.x;
+      canvas.height = fitSize.y;
+      // update draw flag
+      needsDraw = true;
+    }
+
+    // previous scale without fit
+    var previousScale = {
+      x: scale.x / fitScale.x,
+      y: scale.y / fitScale.y
+    };
+    // fit scale
+    var newFitScale = {
       x: fitScale1D * baseSpacing.x,
       y: fitScale1D * baseSpacing.y
     };
-    // new canvas size
-    var width = fitSize.x;
-    var height = fitSize.y;
-    if (!dwv.gui.canCreateCanvas(width, height)) {
-      throw new Error('Cannot resize canvas ' + width + ', ' + height);
+    // scale
+    var newScale = {
+      x: previousScale.x * newFitScale.x,
+      y: previousScale.y * newFitScale.y
+    };
+    // check if different
+    if (previousScale.x !== newScale.x || previousScale.y !== newScale.y) {
+      fitScale = newFitScale;
+      scale = newScale;
+      // update draw flag
+      needsDraw = true;
     }
-    canvas.width = width;
-    canvas.height = height;
-    // reset scale
-    this.setScale({x: 1, y: 1, z: 1});
+
+    // view offset
+    var newViewOffset = {
+      x: fitOffset.x / newFitScale.x,
+      y: fitOffset.y / newFitScale.y
+    };
+    // check if different
+    if (viewOffset.x !== newViewOffset.x || viewOffset.y !== newViewOffset.y) {
+      viewOffset = newViewOffset;
+      offset = {
+        x: viewOffset.x + baseOffset.x + zoomOffset.x,
+        y: viewOffset.y + baseOffset.y + zoomOffset.y
+      };
+      // update draw flag
+      needsDraw = true;
+    }
+
+    // draw if needed
+    if (needsDraw) {
+      this.draw();
+    }
   };
 
   /**
@@ -591,8 +744,9 @@ dwv.gui.ViewLayer = function (containerDiv) {
    */
   function onWLChange(event) {
     // generate and draw if no skip flag
-    if (typeof event.skipGenerate === 'undefined' ||
-      event.skipGenerate === false) {
+    var skip = typeof event.skipGenerate !== 'undefined' &&
+      event.skipGenerate === true;
+    if (!skip) {
       needsDataUpdate = true;
       self.draw();
     }
@@ -605,8 +759,12 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @private
    */
   function onColourChange(_event) {
-    needsDataUpdate = true;
-    self.draw();
+    var skip = typeof event.skipGenerate !== 'undefined' &&
+      event.skipGenerate === true;
+    if (!skip) {
+      needsDataUpdate = true;
+      self.draw();
+    }
   }
 
   /**
@@ -616,21 +774,35 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @private
    */
   function onPositionChange(event) {
-    if (typeof event.skipGenerate === 'undefined' ||
-      event.skipGenerate === false) {
-      // 3D dimensions
-      var dims3D = [0, 1, 2];
-      // remove scroll index
-      var indexScrollIndex = dims3D.indexOf(viewController.getScrollIndex());
-      dims3D.splice(indexScrollIndex, 1);
-      // remove non scroll index from diff dims
-      var diffDims = event.diffDims.filter(function (item) {
-        return dims3D.indexOf(item) === -1;
-      });
-      // update if we have something left
-      if (diffDims.length !== 0) {
-        needsDataUpdate = true;
-        self.draw();
+    var skip = typeof event.skipGenerate !== 'undefined' &&
+      event.skipGenerate === true;
+    if (!skip) {
+      var valid = typeof event.valid === 'undefined' || event.valid;
+      // clear for non valid events
+      if (!valid) {
+        // clear only once
+        if (isValidPosition) {
+          isValidPosition = false;
+          self.clear();
+        }
+      } else {
+        // 3D dimensions
+        var dims3D = [0, 1, 2];
+        // remove scroll index
+        var indexScrollIndex = dims3D.indexOf(viewController.getScrollIndex());
+        dims3D.splice(indexScrollIndex, 1);
+        // remove non scroll index from diff dims
+        var diffDims = event.diffDims.filter(function (item) {
+          return dims3D.indexOf(item) === -1;
+        });
+        // update if we have something left
+        if (diffDims.length !== 0 || !isValidPosition) {
+          // reset valid flag
+          isValidPosition = true;
+          // reset update flag
+          needsDataUpdate = true;
+          self.draw();
+        }
       }
     }
   }
@@ -642,8 +814,9 @@ dwv.gui.ViewLayer = function (containerDiv) {
    * @private
    */
   function onAlphaFuncChange(event) {
-    if (typeof event.skipGenerate === 'undefined' ||
-      event.skipGenerate === false) {
+    var skip = typeof event.skipGenerate !== 'undefined' &&
+      event.skipGenerate === true;
+    if (!skip) {
       needsDataUpdate = true;
       self.draw();
     }
@@ -654,18 +827,24 @@ dwv.gui.ViewLayer = function (containerDiv) {
    *
    * @param {dwv.math.Point} position The new position.
    * @param {dwv.math.Index} _index The new index.
+   * @returns {boolean} True if the position was updated.
    */
   this.setCurrentPosition = function (position, _index) {
-    viewController.setCurrentPosition(position);
+    return viewController.setCurrentPosition(position);
   };
 
   /**
-   * Clear the context and reset the image data.
+   * Clear the context.
    */
   this.clear = function () {
+    // clear the context: reset the transform first
+    // store the current transformation matrix
+    context.save();
+    // use the identity matrix while clearing the canvas
+    context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
-    imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    this.resetLayout();
+    // restore the transform
+    context.restore();
   };
 
   /**

@@ -42,9 +42,20 @@ span {
   width: 350px;
   margin: 5px;
   background-color: limeGreen;
+  /* allow child centering */
+  position: relative;
 }
 .layer {
+  /* needed for overlay */
   position: absolute;
+  /* center */
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+canvas {
+  /* avoid parent auto-resize */
+  vertical-align: middle;
 }
 .line {
   padding: 5px;
@@ -78,6 +89,7 @@ span {
 <script type="text/javascript" src="../../src/image/imageFactory.js"></script>
 <script type="text/javascript" src="../../src/image/iterator.js"></script>
 <script type="text/javascript" src="../../src/image/luts.js"></script>
+<script type="text/javascript" src="../../src/image/maskFactory.js"></script>
 <script type="text/javascript" src="../../src/image/planeHelper.js"></script>
 <script type="text/javascript" src="../../src/image/rescaleLut.js"></script>
 <script type="text/javascript" src="../../src/image/rsi.js"></script>
@@ -94,16 +106,19 @@ span {
 <script type="text/javascript" src="../../src/io/urlsLoader.js"></script>
 <script type="text/javascript" src="../../src/io/filesLoader.js"></script>
 <script type="text/javascript" src="../../src/io/dicomDataLoader.js"></script>
+<script type="text/javascript" src="../../src/io/jsonTextLoader.js"></script>
 <script type="text/javascript" src="../../src/io/memoryLoader.js"></script>
 <script type="text/javascript" src="../../src/io/multipartLoader.js"></script>
 <script type="text/javascript" src="../../src/io/rawImageLoader.js"></script>
 <script type="text/javascript" src="../../src/io/rawVideoLoader.js"></script>
+<script type="text/javascript" src="../../src/io/state.js"></script>
 <script type="text/javascript" src="../../src/io/zipLoader.js"></script>
 <script type="text/javascript" src="../../src/math/bucketQueue.js"></script>
 <script type="text/javascript" src="../../src/math/index.js"></script>
 <script type="text/javascript" src="../../src/math/matrix.js"></script>
 <script type="text/javascript" src="../../src/math/point.js"></script>
 <script type="text/javascript" src="../../src/math/vector.js"></script>
+<script type="text/javascript" src="../../src/tools/opacity.js"></script>
 <script type="text/javascript" src="../../src/tools/undo.js"></script>
 <script type="text/javascript" src="../../src/tools/scroll.js"></script>
 <script type="text/javascript" src="../../src/tools/windowLevel.js"></script>

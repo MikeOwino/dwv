@@ -44,7 +44,7 @@ dwv.App = function () {
    * Get the image.
    *
    * @param {number} index The data index.
-   * @returns {Image} The associated image.
+   * @returns {dwv.image.Image} The associated image.
    */
   this.getImage = function (index) {
     return dataController.get(index).image;
@@ -52,16 +52,16 @@ dwv.App = function () {
   /**
    * Get the last loaded image.
    *
-   * @returns {Image} The image.
+   * @returns {dwv.image.Image} The image.
    */
   this.getLastImage = function () {
     return dataController.get(dataController.length() - 1).image;
   };
   /**
-   * Set the image.
+   * Set the image at the given index.
    *
    * @param {number} index The data index.
-   * @param {Image} img The associated image.
+   * @param {dwv.image.Image} img The associated image.
    */
   this.setImage = function (index, img) {
     dataController.setImage(index, img);
@@ -69,10 +69,63 @@ dwv.App = function () {
   /**
    * Set the last image.
    *
-   * @param {Image} img The associated image.
+   * @param {dwv.image.Image} img The associated image.
    */
   this.setLastImage = function (img) {
     dataController.setImage(dataController.length() - 1, img);
+  };
+
+  /**
+   * Add a new image.
+   *
+   * @param {dwv.image.Image} image The new image.
+   * @param {object} meta The image meta.
+   * @returns {number} The new image id.
+   */
+  this.addNewImage = function (image, meta) {
+    var id = dataController.length();
+
+    // load start event
+    fireEvent({
+      type: 'loadstart',
+      loadtype: 'image',
+      source: 'internal',
+      loadid: id
+    });
+
+    // add image to data controller
+    dataController.addNew(id, image, meta);
+
+    // load item event
+    fireEvent({
+      type: 'loaditem',
+      loadtype: 'image',
+      data: meta,
+      source: 'internal',
+      loadid: id,
+      isfirstitem: true
+    });
+
+    // optional render
+    if (options.viewOnFirstLoadItem) {
+      this.render(id);
+    }
+
+    // load events
+    fireEvent({
+      type: 'load',
+      loadtype: 'image',
+      source: 'internal',
+      loadid: id
+    });
+    fireEvent({
+      type: 'loadend',
+      loadtype: 'image',
+      source: 'internal',
+      loadid: id
+    });
+
+    return id;
   };
 
   /**
@@ -386,8 +439,6 @@ dwv.App = function () {
    * Load a list of files. Can be image files or a state file.
    *
    * @param {Array} files The list of files to load.
-   * @param {object} options The options object, can contain:
-   *  - timepoint: an object with time information
    * @fires dwv.App#loadstart
    * @fires dwv.App#loadprogress
    * @fires dwv.App#loaditem
@@ -395,12 +446,12 @@ dwv.App = function () {
    * @fires dwv.App#error
    * @fires dwv.App#abort
    */
-  this.loadFiles = function (files, options) {
+  this.loadFiles = function (files) {
     if (files.length === 0) {
       dwv.logger.warn('Ignoring empty input file list.');
       return;
     }
-    loadController.loadFiles(files, options);
+    loadController.loadFiles(files);
   };
 
   /**
@@ -458,8 +509,7 @@ dwv.App = function () {
   this.fitToContainer = function () {
     for (var i = 0; i < stage.getNumberOfLayerGroups(); ++i) {
       var layerGroup = stage.getLayerGroup(i);
-      var mazSize = getLayerGroupMaxSize(layerGroup);
-      layerGroup.fitToContainer(mazSize);
+      layerGroup.fitToContainer();
       layerGroup.draw();
     }
   };
@@ -486,14 +536,24 @@ dwv.App = function () {
       typeof options.dataViewConfigs === 'undefined') {
       throw new Error('No available data view configuration');
     }
-    var configs = null;
+    var configs = [];
     if (typeof options.dataViewConfigs['*'] !== 'undefined') {
       configs = options.dataViewConfigs['*'];
-    } else {
+    } else if (typeof options.dataViewConfigs[dataIndex] !== 'undefined') {
       configs = options.dataViewConfigs[dataIndex];
     }
     return configs;
   }
+
+  /**
+   * Get the data view config.
+   * Carefull, returns a reference, do not modify without resetting.
+   *
+   * @returns {object} The configuration list.
+   */
+  this.getDataViewConfig = function () {
+    return options.dataViewConfigs;
+  };
 
   /**
    * Set the data view configuration (see the init options for details).
@@ -505,9 +565,40 @@ dwv.App = function () {
     stage.empty();
     // set new
     options.dataViewConfigs = configs;
-    // re-bind layers
-    stage.bindLayerGroups();
+    // create layer groups
+    createLayerGroups(configs);
   };
+
+  /**
+   * Create layer groups according to a data view config:
+   * adds them to stage and bind them.
+   *
+   * @param {object} dataViewConfigs The data view config.
+   */
+  function createLayerGroups(dataViewConfigs) {
+    var dataKeys = Object.keys(dataViewConfigs);
+    var divIds = [];
+    for (var i = 0; i < dataKeys.length; ++i) {
+      var dataConfigs = dataViewConfigs[dataKeys[i]];
+      for (var j = 0; j < dataConfigs.length; ++j) {
+        var viewConfig = dataConfigs[j];
+        // view configs can contain the same divIds, avoid duplicating
+        if (!divIds.includes(viewConfig.divId)) {
+          // create new layer group
+          var element = document.getElementById(viewConfig.divId);
+          var layerGroup = stage.addLayerGroup(element);
+          // bind events
+          bindLayerGroupToApp(layerGroup);
+          // optional orientation
+          if (typeof viewConfig.orientation !== 'undefined') {
+            layerGroup.setTargetOrientation(
+              dwv.math.getMatrixFromName(viewConfig.orientation));
+          }
+          divIds.push(viewConfig.divId);
+        }
+      }
+    }
+  }
 
   /**
    * Set the layer groups binders.
@@ -527,30 +618,31 @@ dwv.App = function () {
     if (typeof dataIndex === 'undefined' || dataIndex === null) {
       throw new Error('Cannot render without data index');
     }
+
+    // create layer groups if not done yet
+    // (create all to allow for ratio sync)
+    if (stage.getNumberOfLayerGroups() === 0) {
+      createLayerGroups(options.dataViewConfigs);
+    }
+
     // loop on all configs
     var viewConfigs = getViewConfigs(dataIndex);
-    if (!viewConfigs) {
-      throw new Error('No view config for data: ' + dataIndex);
+    // nothing to do if no view config
+    if (viewConfigs.length === 0) {
+      dwv.logger.info('Not rendering data: ' + dataIndex +
+        ' (no data view config)');
+      return;
     }
     for (var i = 0; i < viewConfigs.length; ++i) {
       var config = viewConfigs[i];
-      // create layer group if not done yet
-      // warn: needs a loaded DOM
       var layerGroup =
         stage.getLayerGroupWithElementId(config.divId);
+      // layer group must exist
       if (!layerGroup) {
-        // create new layer group
-        var element = document.getElementById(config.divId);
-        layerGroup = stage.addLayerGroup(element);
-        // bind events
-        bindLayerGroup(layerGroup);
-        // optional orientation
-        if (typeof config.orientation !== 'undefined') {
-          layerGroup.setTargetOrientation(
-            dwv.math.getMatrixFromName(config.orientation));
-        }
+        throw new Error('No layer group for ' + config.divId);
       }
       // initialise or add view
+      // warn: needs a loaded DOM
       if (layerGroup.getViewLayersByDataIndex(dataIndex).length === 0) {
         if (layerGroup.getNumberOfLayers() === 0) {
           initialiseBaseLayers(dataIndex, config);
@@ -574,7 +666,8 @@ dwv.App = function () {
     var layerGroup = stage.getActiveLayerGroup();
     var viewController = layerGroup.getActiveViewLayer().getViewController();
     var k = viewController.getCurrentScrollPosition();
-    layerGroup.addScale(step, {x: cx, y: cy, z: k});
+    var center = new dwv.math.Point3D(cx, cy, k);
+    layerGroup.addScale(step, center);
     layerGroup.draw();
   };
 
@@ -838,7 +931,9 @@ dwv.App = function () {
       } else {
         layer = layerGroup.getActiveViewLayer();
       }
-      toolboxController.bindLayer(layer);
+      if (layer) {
+        toolboxController.bindLayer(layer);
+      }
     }
 
     // set toolbox tool
@@ -979,21 +1074,15 @@ dwv.App = function () {
     }
 
     var isFirstLoadItem = event.isfirstitem;
-    var isTimepoint = typeof event.timepoint !== 'undefined';
-    var timeId = 0;
-    if (isTimepoint) {
-      timeId = event.timepoint.id;
-    }
 
     var eventMetaData = null;
     if (event.loadtype === 'image') {
-      if (isFirstLoadItem && timeId === 0) {
+      if (isFirstLoadItem) {
         dataController.addNew(
           event.loadid, event.data.image, event.data.info);
       } else {
         dataController.update(
-          event.loadid, event.data.image, event.data.info,
-          timeId);
+          event.loadid, event.data.image, event.data.info);
       }
       eventMetaData = event.data.info;
     } else if (event.loadtype === 'state') {
@@ -1017,11 +1106,14 @@ dwv.App = function () {
       type: 'loaditem',
       data: eventMetaData,
       source: event.source,
-      loadtype: event.loadtype
+      loadtype: event.loadtype,
+      loadid: event.loadid,
+      isfirstitem: event.isfirstitem
     });
 
     // render if first and flag allows
     if (event.loadtype === 'image' &&
+      getViewConfigs(event.loadid).length !== 0 &&
       isFirstLoadItem && options.viewOnFirstLoadItem) {
       self.render(event.loadid);
     }
@@ -1118,7 +1210,7 @@ dwv.App = function () {
    * @param {object} group The layer group.
    * @private
    */
-  function bindLayerGroup(group) {
+  function bindLayerGroupToApp(group) {
     // propagate layer group events
     group.addEventListener('zoomchange', fireEvent);
     group.addEventListener('offsetchange', fireEvent);
@@ -1150,36 +1242,6 @@ dwv.App = function () {
   }
 
   /**
-   * Get the data max size for a layer group.
-   *
-   * @todo Filter for data of the layer group.
-   * @param {object} lg The layer group.
-   * @returns {object} The max size as {x,y}.
-   */
-  function getLayerGroupMaxSize(lg) {
-    var maxSize = {x: 0, y: 0};
-    for (var i = 0; i < dataController.length(); ++i) {
-      var dc = dataController.get(i);
-      var geometry = dc.image.getGeometry();
-      var viewOrient = dwv.gui.getViewOrientation(
-        geometry,
-        lg.getTargetOrientation()
-      );
-      var size = geometry.getSize(viewOrient).get2D();
-      var spacing = geometry.getSpacing(viewOrient).get2D();
-      var width = size.x * spacing.x;
-      if (width > maxSize.x) {
-        maxSize.x = width;
-      }
-      var height = size.y * spacing.y;
-      if (height > maxSize.y) {
-        maxSize.y = height;
-      }
-    }
-    return maxSize;
-  }
-
-  /**
    * Add a view layer.
    *
    * @param {number} dataIndex The data index.
@@ -1206,10 +1268,24 @@ dwv.App = function () {
       new dwv.dicom.DicomElementsWrapper(data.meta),
       data.image);
     var viewOrientation = dwv.gui.getViewOrientation(
-      imageGeometry,
+      imageGeometry.getOrientation(),
       layerGroup.getTargetOrientation()
     );
     view.setOrientation(viewOrientation);
+
+    // make pixel of value 0 transparent for segmentation
+    // (assuming RGB data)
+    if (data.image.getMeta().Modality === 'SEG') {
+      view.setAlphaFunction(function (value) {
+        if (value[0] === 0 &&
+          value[1] === 0 &&
+          value[2] === 0) {
+          return 1;
+        } else {
+          return 0xff;
+        }
+      });
+    }
 
     // colour map
     if (typeof dataViewConfig.colourMap !== 'undefined') {
@@ -1219,6 +1295,7 @@ dwv.App = function () {
     // opacity
     var opacity = 1;
     // do we have more than one layer
+    // (the layer has not been added to the layer group yet)
     if (layerGroup.getNumberOfLayers() !== 0) {
       opacity = 0.5;
       // set color map if non was provided
@@ -1232,18 +1309,9 @@ dwv.App = function () {
     viewLayer.setView(view);
     var size2D = imageGeometry.getSize(viewOrientation).get2D();
     var spacing2D = imageGeometry.getSpacing(viewOrientation).get2D();
-    viewLayer.initialise(size2D, spacing2D, dataIndex);
-    viewLayer.setOpacity(opacity);
-
-    // compensate origin difference
-    var diff = null;
-    if (dataIndex !== 0) {
-      var data0 = dataController.get(0);
-      var origin0 = data0.image.getGeometry().getOrigin();
-      var origin1 = imageGeometry.getOrigin();
-      diff = origin0.minus(origin1);
-      viewLayer.setBaseOffset(diff);
-    }
+    viewLayer.initialise(size2D, spacing2D, dataIndex, opacity);
+    viewLayer.setScale(layerGroup.getScale());
+    viewLayer.setOffset(layerGroup.getOffset());
 
     // listen to image changes
     dataController.addEventListener('imagechange', viewLayer.onimagechange);
@@ -1257,23 +1325,20 @@ dwv.App = function () {
       dl.initialise(size2D, spacing2D, dataIndex);
       dl.setPlaneHelper(viewLayer.getViewController().getPlaneHelper());
 
+      // force positionchange to sync layers
       var vc = viewLayer.getViewController();
-      // positionchange event like data
       var value = [
         vc.getCurrentIndex().getValues(),
         vc.getCurrentPosition().getValues()
       ];
-      layerGroup.updateLayersToPositionChange({value: value});
-
-      // compensate origin difference
-      if (dataIndex !== 0) {
-        dl.setBaseOffset(diff);
-      }
+      layerGroup.updateLayersToPositionChange({
+        value: value,
+        srclayerid: viewLayer.getId()
+      });
     }
 
-    // fit to the maximum size
-    var maxSize = getLayerGroupMaxSize(layerGroup);
-    layerGroup.fitToContainer(maxSize);
+    // sync layer groups
+    stage.syncLayerGroupScale();
   }
 
 };

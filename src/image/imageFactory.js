@@ -112,8 +112,9 @@ dwv.image.ImageFactory.prototype.create = function (
   // geometry
   var origin = new dwv.math.Point3D(
     slicePosition[0], slicePosition[1], slicePosition[2]);
+  var time = dicomElements.getTime();
   var geometry = new dwv.image.Geometry(
-    origin, size, spacing, orientationMatrix);
+    origin, size, spacing, orientationMatrix, time);
 
   // sop instance UID
   var sopInstanceUid = dwv.dicom.cleanString(
